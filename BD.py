@@ -11,7 +11,7 @@ def create_db():
         CREATE TABLE IF NOT EXISTS Users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             full_name TEXT NOT NULL,
-            student_group TEXT,
+            student_group TEXT NOT NULL,
             username TEXT NOT NULL UNIQUE,
             password TEXT NOT NULL,
             role TEXT NOT NULL
@@ -34,7 +34,7 @@ def create_db():
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS Visits (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username INTEGER,
+            username TEXT NOT NULL,
             visit_date TEXT NOT NULL,
             FOREIGN KEY (username) REFERENCES Users(username)
         )
@@ -44,10 +44,10 @@ def create_db():
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS IssuedBooks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT NOT NULL,
+            user_id INTEGER NOT NULL,
             book_id INTEGER NOT NULL,
             issue_date TEXT NOT NULL,
-            return_date TEXT,
+            return_date TEXT NOT NULL,
             status TEXT,
             FOREIGN KEY (user_id) REFERENCES Users(id),
             FOREIGN KEY (book_id) REFERENCES Books(id)
@@ -62,7 +62,7 @@ def create_db():
         book_id INTEGER NOT NULL,
         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
         reserve_date DATE DEFAULT CURRENT_DATE,
-        status TEXT,
+        status TEXT NOT NULL,
         FOREIGN KEY (user_id) REFERENCES Users(id),
         FOREIGN KEY (book_id) REFERENCES Books(id)
     )
@@ -138,9 +138,6 @@ def create_db():
     if cursor.fetchone()[0] == 0:
         cursor.executemany('INSERT INTO Books (title, author, genre, description) VALUES (?, ?, ?, ?)', books)
 
-    # Проверка данных
-    cursor.execute('SELECT * FROM IssuedBooks')
-    print("Выданные книги:", cursor.fetchall())
 
     conn.commit()
     conn.close()

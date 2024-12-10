@@ -7,7 +7,7 @@ from openpyxl.utils import get_column_letter
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QPushButton, QVBoxLayout, QLineEdit,
                              QWidget, QMessageBox,QListView, QAbstractItemView, QDialog,
                              QFormLayout, QDateEdit, QLabel, QToolTip,QCompleter,QFileDialog)
-from PyQt5.QtCore import QStringListModel, Qt, QTimer
+from PyQt5.QtCore import QStringListModel, Qt, QDate
 from PyQt5.QtGui import QCursor
 from datetime import datetime
 from datetime import timedelta
@@ -155,6 +155,8 @@ class MainAppWindow(QMainWindow):
         container.setLayout(layout)
         self.setCentralWidget(container)
 
+        self.load_all_books()
+
     def init_reader_ui(self, layout):
         self.search_books_input = QLineEdit(self)
         self.search_books_input.setPlaceholderText("Поиск книг")
@@ -210,6 +212,23 @@ class MainAppWindow(QMainWindow):
         # Получаем выбранную книгу и сохраняем ее
         self.selected_book_title = index.data()
 
+    def load_all_books(self):
+        """Загружает все книги из базы данных и отображает их."""
+        query = "SELECT title, author, genre FROM Books"
+        try:
+            db = DatabaseManager('library.db')
+            books = db.execute_query(query, fetch_all=True)
+            # Подготовка списка для отображения
+            self.book_data = [
+                {"title": book[0], "author": book[1], "genre": book[2]}
+                for book in books
+            ]
+            book_list = [f"{book['title']} - {book['author']} ({book['genre']})" for book in self.book_data]
+            model = QStringListModel(book_list)
+            self.books_list_view.setModel(model)
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить книги: {e}")
+
     def search_books(self):
         search_text = self.search_books_input.text()
         query = """
@@ -248,6 +267,23 @@ class MainAppWindow(QMainWindow):
         if not self.selected_book_title:
             QMessageBox.warning(self, "Ошибка", "Выберите книгу для бронирования.")
             return
+
+        message_box = QMessageBox(self)
+        message_box.setWindowTitle("Подтверждение бронирования")
+        message_box.setText(
+            "Внимание! Бронирование книги действительно в течение 24 часов. "
+            "После истечения этого времени бронь автоматически снимается. "
+            "Если бронь была отменена раньше срока, пожалуйста, обратитесь к библиотекарю.\n\nПродолжить?"
+        )
+        message_box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        message_box.button(QMessageBox.Yes).setText("Да")
+        message_box.button(QMessageBox.No).setText("Нет")
+
+        reply = message_box.exec()
+
+        if reply == QMessageBox.No:
+            return
+
         # Получаем только название книги, убирая "Название - Автор"
         selected_book_title = self.selected_book_title.split(' - ')[0]
         db = DatabaseManager('library.db')
@@ -283,12 +319,15 @@ class MainAppWindow(QMainWindow):
                 QMessageBox.warning(self, "Ошибка", "Вы уже забронировали эту книгу.")
                 return
             # Получаем текущее время с компьютера
-            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            current_time = datetime.now()
+            expiration_time = current_time + timedelta(days=1)  # +1 день для окончания брони
+            # Преобразуем дату в строковый формат
+            expiration_date_str = expiration_time.strftime('%H:%M %d.%m.%Y')
             # Добавляем новую запись о бронировании
             db.execute_non_query("""
                 INSERT INTO Reservations (user_id, book_id, timestamp, reserve_date, status) 
                 VALUES (?, ?, ?, ?, 'booked')
-            """, (self.user_id, book_id, current_time, current_time))
+            """, (self.user_id, book_id, current_time.strftime('%H:%M %d.%m.%Y'), expiration_date_str))
             # Обновляем статус книги
             db.execute_non_query("""
                 UPDATE Books 
@@ -301,31 +340,37 @@ class MainAppWindow(QMainWindow):
             QMessageBox.warning(self, "Ошибка", f"Ошибка при бронировании книги: {e}")
 
     def process_expired_reservations(self, db_path):
-        #Проверяет устаревшие брони (старше 24 часов) при запуске программы.
+        # Проверяет устаревшие брони (старше 24 часов) при запуске программы.
         connection = sqlite3.connect(db_path)
         cursor = connection.cursor()
         try:
             now = datetime.now()
             cursor.execute("""
-                SELECT id, book_id, timestamp, status
+                SELECT id, book_id, reserve_date, status
                 FROM Reservations;
             """)
             reservations = cursor.fetchall()
             expired_reservations = []
-            for reservation_id, book_id, timestamp, status in reservations:
+            for reservation_id, book_id, reserve_date, status in reservations:
                 try:
-                    reservation_time = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
-                    if status == 'booked' and now - reservation_time > timedelta(hours=24):
+                    # Преобразуем строку с датой окончания брони в объект datetime
+                    expiration_time = datetime.strptime(reserve_date, "%H:%M %d.%m.%Y")
+
+                    # Если бронь просрочена
+                    if status == 'booked' and now > expiration_time:
                         expired_reservations.append((reservation_id, book_id))
                 except ValueError:
                     continue
+
             if expired_reservations:
                 for reservation_id, book_id in expired_reservations:
+                    # Удаляем устаревшую бронь из базы данных
                     cursor.execute("DELETE FROM Reservations WHERE id = ?", (reservation_id,))
+                    # Обновляем статус книги на 'available'
                     cursor.execute("UPDATE Books SET status = 'available' WHERE id = ?", (book_id,))
                 connection.commit()
-        except sqlite3.Error:
-            pass
+        except sqlite3.Error as e:
+            print(f"Ошибка при проверке устаревших броней: {e}")
         finally:
             connection.close()
 
@@ -355,7 +400,7 @@ class MainAppWindow(QMainWindow):
             self.reservations_list_view.setSelectionMode(QAbstractItemView.MultiSelection)
             # Формирование списка броней
             reservation_list = [
-                f"{r[0]} - {r[1]} ({r[2]}) | Забронировано: {r[3]}"
+                f"{r[0]} - {r[1]} ({r[2]}) | Забронировано до: {r[3]}"
                 for r in reservations
             ]
             model = QStringListModel(reservation_list)
@@ -402,7 +447,7 @@ class MainAppWindow(QMainWindow):
             if issued_books:
                 # Формируем строку с информацией о книгах, разделяя каждую книгу новой строкой
                 books_list = "\n\n".join([
-                    f"Название: {book[0]}\nАвтор: {book[1]}\nЖанр: {book[2]}\nДата выдачи: {book[3]}\nДата возврата: {book[4]}"
+                    f"Название: {book[0]}\nАвтор: {book[1]}\nЖанр: {book[2]}\nДата выдачи: {book[3]}\nДата ожидаемого возврата: {book[4]}"
                     for book in issued_books
                 ])
                 QMessageBox.information(self, "Мои выданные книги", books_list)
@@ -545,12 +590,11 @@ class MainAppWindow(QMainWindow):
             layout.addRow("Автор:", QLabel(book_author))
             layout.addRow("Жанр:", QLabel(book_genre))
             layout.addRow("Пользователь:", QLabel(user_username))
-            layout.addRow("Дата бронирования:", QLabel(reserve_date))
+            layout.addRow("Дата окончания бронирования:", QLabel(reserve_date))
 
             # Поле для ввода даты выдачи (по умолчанию сегодняшняя дата)
-            issue_date_input = QDateEdit()
-            issue_date_input.setCalendarPopup(True)
-            issue_date_input.setDate(datetime.now().date())
+            issue_date_input = QLineEdit(datetime.now().strftime("%d.%m.%Y"))
+            issue_date_input.setReadOnly(True)
             layout.addRow("Дата выдачи:", issue_date_input)
 
             # Поле для ввода даты возврата (по умолчанию через 2 недели)
@@ -565,8 +609,8 @@ class MainAppWindow(QMainWindow):
             dialog.setLayout(layout)
             # Связываем кнопку с функцией выдачи книги
             def handle_accept():
-                issue_date = issue_date_input.date().toString("yyyy-MM-dd")
-                return_date = return_date_input.date().toString("yyyy-MM-dd")
+                issue_date = issue_date_input.date().toString("dd.MM.yyyy")
+                return_date = return_date_input.date().toString("dd.MM.yyyy")
 
                 try:
                     # Получаем ID пользователя, который забрал книгу
@@ -674,7 +718,6 @@ class MainAppWindow(QMainWindow):
             books = db.execute_query("SELECT title, author, genre FROM Books WHERE status = 'available'",
                                      fetch_all=True)
             book_titles = [f"{row[0]} - {row[1]} ({row[2]})" for row in books]
-
             usernames = db.execute_query("SELECT username FROM Users", fetch_all=True)
             usernames = [row[0] for row in usernames]
         except Exception as e:
@@ -688,28 +731,23 @@ class MainAppWindow(QMainWindow):
         book_completer = QCompleter(book_titles)
         book_completer.setCaseSensitivity(Qt.CaseInsensitive)
         book_input.setCompleter(book_completer)
-
         # Поле ввода имени пользователя с автозаполнением
         username_input = QLineEdit()
         username_completer = QCompleter(usernames)
         username_completer.setCaseSensitivity(Qt.CaseInsensitive)
         username_input.setCompleter(username_completer)
-
-        # Поля для ввода даты
-        issue_date_input = QDateEdit()
-        issue_date_input.setCalendarPopup(True)
-        issue_date_input.setDate(datetime.now().date())
-
+        # Поле "Дата выдачи" с сегодняшней датой (только для чтения)
+        issue_date_input = QLineEdit(datetime.now().strftime("%d.%m.%Y"))
+        issue_date_input.setReadOnly(True)  # Запрещаем редактирование текста пользователем
+        # Поле даты возврата
         return_date_input = QDateEdit()
         return_date_input.setCalendarPopup(True)
         return_date_input.setDate(datetime.now().date() + timedelta(days=14))
-
         # Добавление элементов в форму
         layout.addRow("Название книги:", book_input)
         layout.addRow("Имя пользователя:", username_input)
         layout.addRow("Дата выдачи:", issue_date_input)
         layout.addRow("Дата возврата:", return_date_input)
-
         # Кнопка подтверждения
         submit_button = QPushButton("Выдать")
         submit_button.clicked.connect(
@@ -717,8 +755,8 @@ class MainAppWindow(QMainWindow):
                 dialog,
                 book_input.text(),  # Передаем текст книги
                 username_input.text(),  # Передаем текст имени пользователя
-                issue_date_input.date().toString("yyyy-MM-dd"),  # Передаем дату в формате строки
-                return_date_input.date().toString("yyyy-MM-dd")  # Передаем дату в формате строки
+                issue_date_input.text(),  # Передаем дату выдачи как текст
+                return_date_input.date().toString("dd.MM.yyyy")  # Передаем дату возврата в формате строки
             )
         )
         layout.addRow(submit_button)
@@ -860,9 +898,9 @@ class MainAppWindow(QMainWindow):
         layout.addWidget(accept_button)
         dialog.setLayout(layout)
         def handle_accept():
-            actual_return_date = actual_return_date_input.date().toString("yyyy-MM-dd")
+            actual_return_date = actual_return_date_input.date().toString("dd.MM.yyyy")
             # Проверка на правильность введенной даты возврата
-            if actual_return_date > datetime.now().date().strftime("%Y-%m-%d"):
+            if actual_return_date > datetime.now().date().strftime("%d.%m.%Y"):
                 QMessageBox.warning(self, "Ошибка", "Фактическая дата возврата не может быть позже сегодняшней даты.")
                 return
             db = DatabaseManager('library.db')
@@ -876,7 +914,6 @@ class MainAppWindow(QMainWindow):
                 if not record:
                     QMessageBox.critical(self, "Ошибка", "Не удалось найти книгу для возврата.")
                     return
-
                 book_id, user_id = record  # Разделяем данные записи
                 # Получаем юзернейм пользователя
                 user_record = db.execute_query(
@@ -906,7 +943,6 @@ class MainAppWindow(QMainWindow):
                 dialog.accept()
                 # Обновляем список выданных книг
                 self.view_all_issued_books()
-
             except sqlite3.Error as e:
                 QMessageBox.critical(self, "Ошибка", f"Ошибка при возврате книги: {e}")
             finally:
@@ -937,13 +973,11 @@ class MainAppWindow(QMainWindow):
             headers = ["ФИО", "Username", "Группа", "Дата посещения"]
             header_font = Font(bold=True)
             ws.append(headers)
-
             for col_num, header in enumerate(headers, start=1):
                 ws.cell(row=1, column=col_num).font = header_font
             for visit in visits_data:
                 full_name, username, group, visit_date = visit
                 ws.append((full_name, username, group, visit_date))
-
             for col_num in range(1, ws.max_column + 1):
                 column_letter = get_column_letter(col_num)
                 max_length = 0
