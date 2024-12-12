@@ -814,8 +814,8 @@ class MainAppWindow(QMainWindow):
             db.close()
 
     def view_all_issued_books(self):
-        # Обновление списка выданных книг с добавлением возможности принять книги на возврат и поиска.
-        db = DatabaseManager('library.db')  # Передаем путь к базе данных
+        # Обновление списка выданных книг с добавлением поиска
+        db = DatabaseManager('library.db')
         try:
             # Получаем все записи из таблицы выданных книг
             issued_books = db.execute_query("""
@@ -826,46 +826,63 @@ class MainAppWindow(QMainWindow):
                 JOIN Users ON IssuedBooks.user_id = Users.id
                 ORDER BY DATE(IssuedBooks.return_date) ASC
             """, fetch_all=True)
-            # Если нет выданных книг, показываем сообщение и выходим
             if not issued_books:
                 QMessageBox.information(self, "Выданные книги", "Нет выданных книг.")
                 return
+
             # Формируем список для отображения
             book_list = []
-            self.book_data = {}  # Словарь для хранения данных о книгах по индексу
+            self.book_data = {}  # Словарь для хранения данных о книгах по их текстовому представлению
             for idx, book in enumerate(issued_books):
                 book_info = f"{book[1]} - {book[2]} ({book[3]}) - {book[4]} | Дата выдачи: {book[5]} | Ожидаемая дата возврата: {book[6]}"
                 book_list.append(book_info)
-                self.book_data[idx] = book  # Сохраняем данные книги
-            # Создание окна
+                self.book_data[book_info] = book  # Используем строку как ключ для данных книги
+
             self.issued_window = QMainWindow()
             self.issued_window.setWindowTitle("Выданные книги")
-            self.issued_window.setGeometry(100, 100, 600, 400)  # Увеличили размер окна
+            self.issued_window.setGeometry(100, 100, 600, 400)
             layout = QVBoxLayout()
+
             # Поле для поиска
             search_input = QLineEdit()
             search_input.setPlaceholderText("Введите текст для поиска...")
             layout.addWidget(search_input)
+
             # Список для отображения выданных книг
             self.issued_list_view = QListView()
             self.issued_list_view.setSelectionMode(QAbstractItemView.SingleSelection)
-            self.book_model = QStringListModel(book_list)  # Создаем модель для отображения списка
+            self.book_model = QStringListModel(book_list)
             self.issued_list_view.setModel(self.book_model)
             layout.addWidget(self.issued_list_view)
+
             # Кнопка "Принять книгу на возврат" для библиотекаря
             if self.user_role == 'librarian':
                 return_button = QPushButton("Принять книгу на возврат")
-                return_button.clicked.connect(self.process_return_book)
+
+                def process_return():
+                    selected_indexes = self.issued_list_view.selectedIndexes()
+                    if not selected_indexes:
+                        QMessageBox.warning(self, "Ошибка", "Пожалуйста, выберите книгу для возврата.")
+                        return
+                    # Получаем текст выбранного элемента
+                    selected_book_info = self.book_model.data(selected_indexes[0], Qt.DisplayRole)
+                    # Получаем данные книги из словаря по текстовому ключу
+                    selected_book_data = self.book_data.get(selected_book_info)
+                    if not selected_book_data:
+                        QMessageBox.warning(self, "Ошибка", "Не удалось найти данные о выбранной книге.")
+                        return
+                    # Передаем данные о выбранной книге в функцию возврата
+                    self.process_return_book(selected_book_data)
+
+                return_button.clicked.connect(process_return)
                 layout.addWidget(return_button)
             # Кнопка "Назад"
             back_button = QPushButton("Назад")
             back_button.clicked.connect(self.issued_window.close)
             layout.addWidget(back_button)
-            # Устанавливаем виджет в центральное окно
             container = QWidget()
             container.setLayout(layout)
             self.issued_window.setCentralWidget(container)
-            # Центрируем окно на экране
             self.center_window(self.issued_window)
             # Логика поиска
             def filter_books():
@@ -874,22 +891,12 @@ class MainAppWindow(QMainWindow):
                     book for book in book_list if filter_text in book.lower()
                 ]
                 self.book_model.setStringList(filtered_books)
-
-            # Обновляем список при каждом изменении текста в поле поиска
             search_input.textChanged.connect(filter_books)
-
-            # Показываем окно
             self.issued_window.show()
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Ошибка при загрузке выданных книг: {e}")
 
-    def process_return_book(self):
-        selected_indexes = self.issued_list_view.selectedIndexes()
-        if not selected_indexes:
-            QMessageBox.warning(self, "Ошибка", "Пожалуйста, выберите книгу для возврата.")
-            return
-        selected_index = selected_indexes[0].row()
-        book = self.book_data.get(selected_index)
+    def process_return_book(self, book):
         if not book:
             QMessageBox.warning(self, "Ошибка", "Не удалось найти данные о выбранной книге.")
             return
@@ -914,13 +921,12 @@ class MainAppWindow(QMainWindow):
         dialog.setLayout(layout)
         def handle_accept():
             actual_return_date = actual_return_date_input.date().toString("dd.MM.yyyy")
-            # Проверка на правильность введенной даты возврата
             if actual_return_date > datetime.now().date().strftime("%d.%m.%Y"):
                 QMessageBox.warning(self, "Ошибка", "Фактическая дата возврата не может быть позже сегодняшней даты.")
                 return
+
             db = DatabaseManager('library.db')
             try:
-                # Получаем book_id и user_id из таблицы IssuedBooks
                 record = db.execute_query(
                     "SELECT book_id, user_id FROM IssuedBooks WHERE id = ?",
                     params=(issued_book_id,),
@@ -929,8 +935,7 @@ class MainAppWindow(QMainWindow):
                 if not record:
                     QMessageBox.critical(self, "Ошибка", "Не удалось найти книгу для возврата.")
                     return
-                book_id, user_id = record  # Разделяем данные записи
-                # Получаем юзернейм пользователя
+                book_id, user_id = record
                 user_record = db.execute_query(
                     "SELECT username FROM Users WHERE id = ?",
                     params=(user_id,),
@@ -940,15 +945,12 @@ class MainAppWindow(QMainWindow):
                     QMessageBox.warning(self, "Ошибка", "Не удалось найти пользователя.")
                     return
                 user_username = user_record[0]
-                # Удаляем запись о выдаче книги
                 db.execute_non_query("DELETE FROM IssuedBooks WHERE id = ?", params=(issued_book_id,))
-                # Обновляем статус книги на "available"
                 db.execute_non_query("""
                     UPDATE Books 
                     SET status = 'available'
                     WHERE id = ?
                 """, params=(book_id,))
-                # Записываем возврат как посещение (дата возврата и юзернейм)
                 db.execute_non_query("""
                     INSERT INTO Visits (username, visit_date)
                     VALUES (?, ?)
@@ -956,12 +958,12 @@ class MainAppWindow(QMainWindow):
                 QMessageBox.information(self, "Успех", "Книга успешно возвращена!")
                 self.issued_window.close()
                 dialog.accept()
-                # Обновляем список выданных книг
                 self.view_all_issued_books()
             except sqlite3.Error as e:
                 QMessageBox.critical(self, "Ошибка", f"Ошибка при возврате книги: {e}")
             finally:
                 db.close()
+
         accept_button.clicked.connect(handle_accept)
         dialog.exec()
 
@@ -1006,7 +1008,6 @@ class MainAppWindow(QMainWindow):
                 # Устанавливаем ширину столбца
                 adjusted_width = (max_length + 2)
                 ws.column_dimensions[column_letter].width = adjusted_width
-
             # Сохраняем файл
             wb.save(file_path)
             QMessageBox.information(self, "Успех", f"Файл успешно сохранен в: {file_path}")
