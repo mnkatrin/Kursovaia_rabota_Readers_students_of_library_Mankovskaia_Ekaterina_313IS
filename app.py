@@ -585,16 +585,15 @@ class MainAppWindow(QMainWindow):
             dialog.setWindowTitle("Выдача книги")
             layout = QFormLayout()
 
+            issue_date = datetime.now().strftime("%d.%m.%Y")
+            issue_date_input = QLineEdit(issue_date)
+            issue_date_input.setReadOnly(True)
+
             # Отображаем информацию о книге
             layout.addRow("Название:", QLabel(book_title))
             layout.addRow("Автор:", QLabel(book_author))
             layout.addRow("Жанр:", QLabel(book_genre))
             layout.addRow("Пользователь:", QLabel(user_username))
-            layout.addRow("Дата окончания бронирования:", QLabel(reserve_date))
-
-            # Поле для ввода даты выдачи (по умолчанию сегодняшняя дата)
-            issue_date_input = QLineEdit(datetime.now().strftime("%d.%m.%Y"))
-            issue_date_input.setReadOnly(True)
             layout.addRow("Дата выдачи:", issue_date_input)
 
             # Поле для ввода даты возврата (по умолчанию через 2 недели)
@@ -607,9 +606,9 @@ class MainAppWindow(QMainWindow):
             accept_button = QPushButton("Выдать книгу")
             layout.addWidget(accept_button)
             dialog.setLayout(layout)
+
             # Связываем кнопку с функцией выдачи книги
             def handle_accept():
-                issue_date = issue_date_input.date().toString("dd.MM.yyyy")
                 return_date = return_date_input.date().toString("dd.MM.yyyy")
 
                 try:
@@ -815,7 +814,7 @@ class MainAppWindow(QMainWindow):
             db.close()
 
     def view_all_issued_books(self):
-        #Обновление списка выданных книг с добавлением возможности принять книги на возврат.
+        # Обновление списка выданных книг с добавлением возможности принять книги на возврат и поиска.
         db = DatabaseManager('library.db')  # Передаем путь к базе данных
         try:
             # Получаем все записи из таблицы выданных книг
@@ -843,13 +842,17 @@ class MainAppWindow(QMainWindow):
             self.issued_window.setWindowTitle("Выданные книги")
             self.issued_window.setGeometry(100, 100, 600, 400)  # Увеличили размер окна
             layout = QVBoxLayout()
+            # Поле для поиска
+            search_input = QLineEdit()
+            search_input.setPlaceholderText("Введите текст для поиска...")
+            layout.addWidget(search_input)
             # Список для отображения выданных книг
             self.issued_list_view = QListView()
             self.issued_list_view.setSelectionMode(QAbstractItemView.SingleSelection)
-            model = QStringListModel(book_list)
-            self.issued_list_view.setModel(model)
+            self.book_model = QStringListModel(book_list)  # Создаем модель для отображения списка
+            self.issued_list_view.setModel(self.book_model)
             layout.addWidget(self.issued_list_view)
-            # Кнопка "Принять книгу на возврат"
+            # Кнопка "Принять книгу на возврат" для библиотекаря
             if self.user_role == 'librarian':
                 return_button = QPushButton("Принять книгу на возврат")
                 return_button.clicked.connect(self.process_return_book)
@@ -864,6 +867,18 @@ class MainAppWindow(QMainWindow):
             self.issued_window.setCentralWidget(container)
             # Центрируем окно на экране
             self.center_window(self.issued_window)
+            # Логика поиска
+            def filter_books():
+                filter_text = search_input.text().strip().lower()
+                filtered_books = [
+                    book for book in book_list if filter_text in book.lower()
+                ]
+                self.book_model.setStringList(filtered_books)
+
+            # Обновляем список при каждом изменении текста в поле поиска
+            search_input.textChanged.connect(filter_books)
+
+            # Показываем окно
             self.issued_window.show()
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Ошибка при загрузке выданных книг: {e}")
